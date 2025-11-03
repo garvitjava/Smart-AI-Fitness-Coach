@@ -10,6 +10,9 @@ dtaidistance
 
 scikit-learn
 
+streamlit-webrtc
+av
+
 
 
 
