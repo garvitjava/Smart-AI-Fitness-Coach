@@ -1,3 +1,4 @@
+python_version: "3.11"
 streamlit
 opencv-python-headless
 mediapipe
@@ -9,4 +10,5 @@ scipy
 dtaidistance
 
 scikit-learn
+
 
