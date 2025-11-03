@@ -1,0 +1,10 @@
+streamlit
+opencv-python-headless
+mediapipe
+numpy
+pandas
+groq
+python-dotenv
+scipy
+dtaidistance
+scikit-learn
