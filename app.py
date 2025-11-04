@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 import numpy as np
 import av
-import threading # Already imported, but needed for the fix
+import threading 
 import time
 
 # Import streamlit-webrtc components
@@ -64,7 +64,7 @@ with tab1:
         advice_placeholder.markdown(st.session_state.llm_advice)
 
 # ==============================================================================
-# --- *** MODIFIED: WEBRTC Video Processor *** ---
+# --- *** MODIFIED: WEBRTC Video Processor with DEBUGGING *** ---
 # ==============================================================================
 class FitnessVideoProcessor(VideoProcessorBase):
     def __init__(self, exercise_type: str):
@@ -78,7 +78,6 @@ class FitnessVideoProcessor(VideoProcessorBase):
         self.chart_data = pd.DataFrame(columns=["Frame", "Main Angle", "Form Angle"])
         self.frame_count = 0
 
-        # --- *** NEW: Thread-safe event for on_ended *** ---
         # This flag will be set by the 'on_ended' callback
         self.workout_ended = threading.Event()
         self.final_summary = None
@@ -92,37 +91,55 @@ class FitnessVideoProcessor(VideoProcessorBase):
                 self.exercise_processor.joint_time_series
             )
 
+    # --- *** MODIFIED: recv method with error handling *** ---
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
-        
-        # Process the frame using your existing logic
-        img = self.exercise_processor.process_frame(img)
-        
-        # Update live stats safely
-        with self.lock:
-            self.rep_count = self.exercise_processor.counter
-            self.state = self.exercise_processor.state.upper()
-            self.feedback = self.exercise_processor.feedback
+
+        try:
+            # --- START of your original processing ---
+            img = self.exercise_processor.process_frame(img)
             
-            self.frame_count += 1
-            main_angle = self.exercise_processor.joint_time_series['main_angle'][-1] if self.exercise_processor.joint_time_series['main_angle'] else None
-            form_angle = self.exercise_processor.joint_time_series['form_angle'][-1] if self.exercise_processor.joint_time_series['form_angle'] else None
-            
-            new_data = {
-                "Frame": self.frame_count,
-                "Main Angle": main_angle if main_angle is not None else np.nan,
-                "Form Angle": form_angle if form_angle is not None else np.nan
-            }
-            
-            self.chart_data = pd.concat(
-                [self.chart_data, pd.DataFrame([new_data])], 
-                ignore_index=True
+            # Update live stats safely
+            with self.lock:
+                self.rep_count = self.exercise_processor.counter
+                self.state = self.exercise_processor.state.upper()
+                self.feedback = self.exercise_processor.feedback
+                
+                self.frame_count += 1
+                main_angle = self.exercise_processor.joint_time_series['main_angle'][-1] if self.exercise_processor.joint_time_series['main_angle'] else None
+                form_angle = self.exercise_processor.joint_time_series['form_angle'][-1] if self.exercise_processor.joint_time_series['form_angle'] else None
+                
+                new_data = {
+                    "Frame": self.frame_count,
+                    "Main Angle": main_angle if main_angle is not None else np.nan,
+                    "Form Angle": form_angle if form_angle is not None else np.nan
+                }
+                
+                self.chart_data = pd.concat(
+                    [self.chart_data, pd.DataFrame([new_data])], 
+                    ignore_index=True
+                )
+            # --- END of your original processing ---
+
+        except Exception as e:
+            # If an error happens, draw it on the frame
+            # This is the most important part of the fix
+            st.error(f"Error in video processing: {e}") # Log to Streamlit
+            cv2.putText(
+                img, 
+                f"ERROR: {str(e)}", 
+                (50, 100), # Position
+                cv2.FONT_HERSHEY_SIMPLEX, # Font
+                0.7, # Scale
+                (0, 0, 255), # Color (Red)
+                2 # Thickness
             )
 
+        # Return the frame (either processed or with the error message)
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-    # --- *** NEW: on_ended Callback *** ---
+    # --- This method is unchanged ---
     def on_ended(self):
         """
         This method is called automatically by streamlit-webrtc
@@ -272,7 +289,7 @@ if st.session_state.exercise_processor:
             video_processor_factory=lambda: processor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
-            rtc_configuration=RTC_CONFIGURATION # --- NEW: Added STUN server
+            rtc_configuration=RTC_CONFIGURATION # --- Added STUN server
         )
     
     # This loop updates the stats on the screen *while* the component is playing
