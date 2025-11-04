@@ -3,12 +3,12 @@ import cv2
 import pandas as pd
 from datetime import datetime
 import numpy as np
-import av  # Import av
-import threading # Import threading
-import time # Import time
+import av
+import threading # Already imported, but needed for the fix
+import time
 
 # Import streamlit-webrtc components
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase, RTCConfiguration
 
 # Import your modules
 import database as db
@@ -32,17 +32,16 @@ if 'llm_advice' not in st.session_state:
 if 'username' not in st.session_state:
     st.session_state.username = "DefaultUser"
 if 'webrtc_key' not in st.session_state:
-    st.session_state.webrtc_key = "default" # Key to force-restart the component
+    st.session_state.webrtc_key = "default"
 
 # --- Placeholders ---
-# We define placeholders in the main body so the callback can access them
 tab1, tab2, tab3 = st.tabs(["🏋️‍♂️ Live Workout", "📊 Workout Analysis", "📈 Progress"])
 
 with tab1:
     col1, col2 = st.columns([2, 1])
     with col1:
         st.header("Your Live Workout")
-        video_placeholder = st.empty() # This is where the webrtc component will go
+        video_placeholder = st.empty() 
 
     with col2:
         st.header("Workout Analysis")
@@ -54,7 +53,6 @@ with tab1:
         st.subheader("Joint Angle (Time Series)")
         chart_placeholder = st.empty()
 
-        # Set default values
         rep_placeholder.metric("Reps", 0)
         state_placeholder.metric("State", "STOPPED")
         feedback_placeholder.info("Your stats will appear here.")
@@ -66,27 +64,28 @@ with tab1:
         advice_placeholder.markdown(st.session_state.llm_advice)
 
 # ==============================================================================
-# --- NEW: WEBRTC Video Processor ---
+# --- *** MODIFIED: WEBRTC Video Processor *** ---
 # ==============================================================================
-# This class replaces your `while st.session_state.run` loop
-# It processes frames in a separate thread
-
 class FitnessVideoProcessor(VideoProcessorBase):
     def __init__(self, exercise_type: str):
-        # We need a lock to prevent race conditions when updating stats
         self.lock = threading.Lock() 
         self.exercise_type = exercise_type
         self.exercise_processor = ExerciseProcessor(exercise_type)
         
-        # Placeholders for live data
         self.rep_count = 0
         self.state = "STOPPED"
         self.feedback = "Click Start to begin."
         self.chart_data = pd.DataFrame(columns=["Frame", "Main Angle", "Form Angle"])
         self.frame_count = 0
 
-    def get_summary(self):
-        # Helper to get all data at the end
+        # --- *** NEW: Thread-safe event for on_ended *** ---
+        # This flag will be set by the 'on_ended' callback
+        self.workout_ended = threading.Event()
+        self.final_summary = None
+        self.final_ts_data = None
+
+    def get_summary_and_data(self):
+        """Helper to safely get all data at the end."""
         with self.lock:
             return (
                 self.exercise_processor.get_summary(),
@@ -94,46 +93,53 @@ class FitnessVideoProcessor(VideoProcessorBase):
             )
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        # Convert av.VideoFrame to numpy array (BGR format for OpenCV)
         img = frame.to_ndarray(format="bgr24")
-        
-        # Flip the frame horizontally (like a mirror)
         img = cv2.flip(img, 1)
         
         # Process the frame using your existing logic
         img = self.exercise_processor.process_frame(img)
         
-        # Update live stats safely using the lock
+        # Update live stats safely
         with self.lock:
             self.rep_count = self.exercise_processor.counter
             self.state = self.exercise_processor.state.upper()
             self.feedback = self.exercise_processor.feedback
             
-            # Update chart data
             self.frame_count += 1
             main_angle = self.exercise_processor.joint_time_series['main_angle'][-1] if self.exercise_processor.joint_time_series['main_angle'] else None
             form_angle = self.exercise_processor.joint_time_series['form_angle'][-1] if self.exercise_processor.joint_time_series['form_angle'] else None
             
-            # Create a dictionary for the new row
             new_data = {
                 "Frame": self.frame_count,
                 "Main Angle": main_angle if main_angle is not None else np.nan,
                 "Form Angle": form_angle if form_angle is not None else np.nan
             }
             
-            # Use pd.concat to append the new row
             self.chart_data = pd.concat(
                 [self.chart_data, pd.DataFrame([new_data])], 
                 ignore_index=True
             )
 
-        # Return the processed frame (must be av.VideoFrame)
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
+    # --- *** NEW: on_ended Callback *** ---
+    def on_ended(self):
+        """
+        This method is called automatically by streamlit-webrtc
+        when the stream is stopped (e.g., user clicks Stop).
+        """
+        with self.lock:
+            # Get the final data one last time
+            self.final_summary, self.final_ts_data = self.exercise_processor.get_summary(), self.exercise_processor.joint_time_series
+            
+        # Set the event flag to signal the main thread
+        self.workout_ended.set()
+
 # ==============================================================================
-# --- TAB 2: WORKOUT ANALYSIS (Unchanged) ---
+# --- TAB 2 & 3 (Unchanged) ---
 # ==============================================================================
 with tab2:
+    # ... (Your code for Tab 2 is correct, no changes) ...
     st.header(f"Single Workout Analysis for {st.session_state.username}")
     
     if st.button("Refresh Data"):
@@ -197,10 +203,9 @@ with tab2:
                 plot_df = full_df.rename(columns={'main_angle': angle_name, 'form_angle': form_name})
                 st.line_chart(plot_df, x='frame_time', y=[angle_name, form_name])
 
-# ==============================================================================
-# --- TAB 3: PROGRESS (Unchanged) ---
-# ==============================================================================
+
 with tab3:
+    # ... (Your code for Tab 3 is correct, no changes) ...
     st.header(f"Long-Term Progress for {st.session_state.username}")
     
     exercise_to_plot = st.selectbox("Select an exercise to track:", ("Squats", "Push-ups", "Bicep Curls"))
@@ -229,7 +234,7 @@ with tab3:
             st.dataframe(progress_df)
 
 # ==============================================================================
-# --- SIDEBAR (Controls modified) ---
+# --- SIDEBAR (Controls) ---
 # ==============================================================================
 st.sidebar.title("Controls")
 st.sidebar.text_input("Enter your name:", value=st.session_state.username, key="username")
@@ -243,43 +248,42 @@ if st.sidebar.button("Start Workout", type="primary"):
     st.session_state.llm_advice = ""
     advice_placeholder.empty() 
     
-    # Create the processor instance and store it in session state
     st.session_state.exercise_processor = FitnessVideoProcessor(st.session_state.exercise_choice)
-    
-    # Force the webrtc component to remount by changing its key
-    st.session_state.webrtc_key = str(datetime.now().timestamp()) # New key
+    st.session_state.webrtc_key = str(datetime.now().timestamp())
     st.rerun()
 
 # ==============================================================================
-# --- Main Webcam Loop (Replaced with webrtc_streamer) ---
+# --- *** MODIFIED: Main Webcam Logic *** ---
 # ==============================================================================
 
+# --- NEW: Add RTC Configuration for STUN server ---
+# This helps with connection issues on cloud platforms
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+})
+
 if st.session_state.exercise_processor:
-    # Get the processor from session state
     processor = st.session_state.exercise_processor
     
-    # This is the main component that handles the webcam
     with video_placeholder.container():
         ctx = webrtc_streamer(
-            key=st.session_state.webrtc_key, # Use the dynamic key
+            key=st.session_state.webrtc_key,
             mode=WebRtcMode.SENDRECV,
             video_processor_factory=lambda: processor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
+            rtc_configuration=RTC_CONFIGURATION # --- NEW: Added STUN server
         )
     
-    # This block updates the stats on the screen
+    # This loop updates the stats on the screen *while* the component is playing
     while ctx.state.playing:
         with processor.lock:
-            # Update placeholders
             rep_placeholder.metric("Reps", processor.rep_count)
             state_placeholder.metric("State", processor.state)
             feedback_placeholder.markdown(f"**Feedback:**<br>{processor.feedback}", unsafe_allow_html=True)
             
-            # Update chart
             chart_df = processor.chart_data.copy()
             if not chart_df.empty:
-                # Rename columns for the chart legend
                 if processor.exercise_type == "Squats":
                     angle_name, form_name = "Knee Angle", "Hip Angle"
                 elif processor.exercise_type == "Push-ups":
@@ -292,46 +296,50 @@ if st.session_state.exercise_processor:
                 chart_df = chart_df.rename(columns={'Main Angle': angle_name, 'Form Angle': form_name})
                 chart_placeholder.line_chart(chart_df.set_index("Frame"), y=[angle_name, form_name])
         
-        # We must sleep to allow other threads to run
         time.sleep(0.1) 
-            
-    # --- *** MODIFIED: Save Workout Logic *** ---
-    # This block runs when the user clicks the "Stop" button on the component
-    if not ctx.state.playing and st.session_state.exercise_processor:
+        
+    # --- *** NEW: 'on_ended' CHECK *** ---
+    # This block replaces your old 'if not ctx.state.playing...'
+    # It checks the event flag set by the 'on_ended' callback.
+    
+    if processor.workout_ended.is_set():
         st.info("Workout stopped. Saving data...")
         
-        # Get the processor and its data
-        processor = st.session_state.exercise_processor
-        summary, ts_data = processor.get_summary()
+        # Get the final data from the processor
+        summary = processor.final_summary
+        ts_data = processor.final_ts_data
         
-        # Clean data (must be identical to analysis.py)
-        main_angles_raw = ts_data['main_angle']
-        form_angles_raw = ts_data['form_angle']
-        main_angles_clean = np.array([a for a in main_angles_raw if a is not None and a > 0])
-        form_angles_clean = np.array([f for f in form_angles_raw if f is not None and f > 0])
-        
-        analysis_results = {} # Default empty dict
-        if len(main_angles_clean) > 5: # Only analyze if there's enough data
-             analysis_results = analysis.analyze_workout(
-                 main_angles_clean, 
-                 form_angles_clean, 
-                 summary['Exercise']
-             )
-        
-        # --- Save workout AND analysis results ---
-        db.save_workout(st.session_state.username, summary, ts_data, analysis_results)
-        
-        if summary['Reps'] > 0: 
-            groq_client = llm.get_groq_client()
-            if groq_client:
-                with st.spinner("Getting post-workout advice..."):
-                    st.session_state.llm_advice = llm.get_workout_advice(groq_client, summary)
-            else:
-                st.session_state.llm_advice = "Could not connect to AI Coach. Is your API key set?"
+        if summary is None or ts_data is None:
+             st.error("Error retrieving workout data. Data may not be saved.")
         else:
-            st.session_state.llm_advice = "Workout saved, but no reps were counted. Try again!"
+            # Clean data (must be identical to analysis.py)
+            main_angles_raw = ts_data['main_angle']
+            form_angles_raw = ts_data['form_angle']
+            main_angles_clean = np.array([a for a in main_angles_raw if a is not None and a > 0])
+            form_angles_clean = np.array([f for f in form_angles_raw if f is not None and f > 0])
+            
+            analysis_results = {} 
+            if len(main_angles_clean) > 5:
+                 analysis_results = analysis.analyze_workout(
+                     main_angles_clean, 
+                     form_angles_clean, 
+                     summary['Exercise']
+                 )
+            
+            # --- Save workout AND analysis results ---
+            db.save_workout(st.session_state.username, summary, ts_data, analysis_results)
+            
+            if summary['Reps'] > 0: 
+                groq_client = llm.get_groq_client()
+                if groq_client:
+                    with st.spinner("Getting post-workout advice..."):
+                        st.session_state.llm_advice = llm.get_workout_advice(groq_client, summary)
+                else:
+                    st.session_state.llm_advice = "Could not connect to AI Coach. Is your API key set?"
+            else:
+                st.session_state.llm_advice = "Workout saved, but no reps were counted. Try again!"
         
-        # Important: Clear the processor to prevent re-running this block
+        # Important: Clear the processor to reset the state
         st.session_state.exercise_processor = None
         st.rerun()
 
