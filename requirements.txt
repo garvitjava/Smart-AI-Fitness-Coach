@@ -1,7 +1,7 @@
-streamlit==1.41.0
+streamlit
 opencv-python-headless
 mediapipe==0.10.14
-protobuf==3.20.3
+protobuf==4.25.3
 numpy<2.0.0
 pandas
 groq
@@ -11,4 +11,3 @@ dtaidistance
 scikit-learn
 streamlit-webrtc
 av
-
