@@ -1,6 +1,7 @@
 streamlit
 opencv-python-headless
 mediapipe
+protobuf==3.20.3
 numpy
 pandas
 groq
