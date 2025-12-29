@@ -7,17 +7,6 @@ groq
 python-dotenv
 scipy
 dtaidistance
-
 scikit-learn
-
 streamlit-webrtc
 av
-
-
-
-
-
-
-
-
-
